@@ -1,0 +1,194 @@
+---
+title: "Who is Wide Receiver University"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+Many colleges lay claim to the title of “Wide Receiver University” such as Ohio State which as produced star receivers Justin Jefferson and Ja’marr Chase, Alabama with Julio Jones and Devonta Smith, Andre Johnson and Reggie Wayne both come from the U at Miami. Multiple colleges have produced extremely skilled wide receivers but who has done it the most consistent is what is most important.
+
+```{r}
+library(doBy)
+library(nflreadr)
+library(dplyr)
+library(readxl)
+library(ggplot2)
+library(tidyr)
+```
+```{r}
+draft <- load_draft_picks(
+  seasons = 2000:2025,
+  file_type = getOption("nflreadr.prefer", default = "rds")
+)
+head(draft)
+```
+
+Clean out some of the data for, some colleges are too small or recognized or international players Don't get recognized the same. The draft in 2025 some picks appeared to be incorrectly attributed for the wrong teams so we are removing these, also if there are blank names we are removing these. Finally as this is Wide Receiver U we will be looking only at receivers drafted, position changes for players such as Terrel Pryor who was drafted as a QB and became a Wide Receiver later in his career are kept out. 
+
+```{r}
+draft$college[draft$college == "" | is.na(draft$college)] <- "Unknown"
+draft <- draft %>% filter(pfr_player_name !="" )
+WRpicks <- draft %>% filter(position == "WR")
+head(WRpicks)
+```
+Couple of issues I noticed, some players change their name example, Steve Smith becomes Steve Smith Sr after 2000, Chod Ochocinco was Chad Johnson prior to the 2008 season.Luckily the NFL Draft database does have career yardarge for every player drafted. Using weekly averages seems a little volatile, what i will be looking at instead is career avareges also I'm going to filter out players based on a couple of things.
+ 
+1. I will set a threshold, for minimum games 16 this is one full season
+2. They should start a minimum of one season this ensure contributors are only be looked at
+3. Must have a minimum of ten receptions, the reason is players such as gunners or returners are not the type of player we want in this but may be labled as that position
+
+Finally since we are focuising only on receivers, lets only look at the columns that pertain to receivers
+
+```{r}
+minwrpicks <- subset(WRpicks, games>=16 & seasons_started > 0 & receptions > 10)
+minwrpicks <- minwrpicks[,c(1:4,8:10,13:18,31:33)]
+head(minwrpicks)
+```
+Next each receiver will be assigned a score based on the total career yardage, receptions, touchdowns and first team all pro appearences. 
+
+The formula will be Score = Receptions x 2 + Yardage x 3 + Reception TDs + First Team All Pros x 10 
+
+Additionally we will add the Z-Score for each wide receiver to find players that truly had elite careers, if a college is able to consistently produce players like this their argument for wide receiver university becomes greater.
+
+The Z-Score is found by getting the average of the wide receiver scores, and the standard deviation first. Next we subtract each players score from the average score and divide it by the standard deviation. Any player over 1 is above the average score. 
+
+```{r}
+minwrpicks$WRSCORE <- (minwrpicks$receptions * 2) + (minwrpicks$rec_yards * 3) + (
+  minwrpicks$rec_tds) + (minwrpicks$allpro * 10)
+
+mean_score <- mean(minwrpicks$WRSCORE, na.rm = TRUE)
+sd_score <- sd(minwrpicks$WRSCORE, na.rm = TRUE)
+
+minwrpicks$ZScore <- (minwrpicks$WRSCORE - mean_score) / sd_score
+minwrpicks <- minwrpicks %>%
+  mutate(outlier = ZScore > 2)
+
+```
+
+Our data is now ready for us to summarize our findings. Each college is given a row finding the number of receivers drafted, average draft pick, number of those picks in the first round, total yardage, total receptions, total tds and total first team all pros by their players. We also add the total receiver score, average score and number of outliers in this as well 
+
+```{r}
+wrsummary <- minwrpicks %>%
+  group_by(college) %>%
+  summarise(
+    total_wrs = n(),
+    avg_pick = mean(pick, na.rm = TRUE),
+    first_rounds = sum(round==1, na.rm=TRUE),
+    total_yards = sum(rec_yards, na.rm = TRUE),
+    total_receptions = sum(receptions, na.rm = TRUE),
+    total_tds = sum(rec_tds, na.rm = TRUE),
+    first_team_allpro = sum(allpro, na.rm = TRUE),
+    receiverscore = sum(WRSCORE, na.rm = TRUE),
+    num_outliers = sum(outlier, na.rm = TRUE),
+    avg_score = receiverscore / total_wrs,
+    .groups = "drop"
+  )
+```
+
+One issue I noticed was that some universitys produced only one receiver that was elgigible for anlysis, places such as Utah who had Steve Smith Sr had their per average scores greatly skewed due to his great career. Because of this, I will find the lowest quartile of receivers drafted and only have colleges that had this many drafted or more. 
+
+```{r}
+quantile(wrsummary$total_wrs, 0.25, na.rm = TRUE)
+wrsummary <- subset(wrsummary, total_wrs > 2)
+```
+
+
+Finally lets look at the top scoring colleges, these are colleges who have the highest total score of from all receivers that played. 
+
+```{r}
+topscorecolleges <- wrsummary %>% arrange(desc(receiverscore)) %>%
+  slice_head(n=10)
+ggplot(topscorecolleges, aes(x = reorder(college, -receiverscore), y = receiverscore)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  geom_text(aes(label = receiverscore),size=4, vjust = -0.2) +
+  theme_minimal() +
+  labs(
+    title = "Top 10 Colleges by Total WR Score",
+    x = "College",
+    y = "Receiver Score"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  theme(plot.title = element_text(hjust = 0.5)) +
+  expand_limits(y = max(topscorecolleges$receiverscore) + 10) +
+  theme(axis.title.y=element_blank(),legend.position="none", axis.text.y=element_blank()) +
+  theme(panel.background = element_rect(fill='white', color="white"))
+```
+
+LSU leads the way, with Ohio St. and suprising Miami (FL) ahead of Alabama, Oregon St. also makes the top 10.
+
+Next we will look at the colleges with the best average score, average draft pick and highest number of first round picks. 
+
+```{r}
+higehst_avg <- wrsummary %>% arrange(desc(avg_score)) %>%
+  slice_head(n=10)
+
+higehst_avg$avg_score <- round(higehst_avg$avg_score)
+
+ggplot(higehst_avg, aes(x = reorder(college, -avg_score), y = avg_score)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  geom_text(aes(label = avg_score),size=4, vjust = -0.2) +
+  theme_minimal() +
+  labs(
+    title = "Top 10 Colleges by Highest Average WR Score",
+    x = "College",
+    y = "Receiver Score"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  theme(plot.title = element_text(hjust = 0.5)) +
+  expand_limits(y = max(higehst_avg$avg_score) + 10) +
+  theme(axis.title.y=element_blank(),legend.position="none", axis.text.y=element_blank())+
+  theme(panel.background = element_rect(fill='white', color="white"))
+
+```
+California leads the way here, with Pittsburg and Miami (FL) close behind. LSU which had the highest overall score is now outside the top of this analysis, showing that while they have highest score the per average is not as high compared to others. 
+
+```{r}
+higehst_avg_pick <- wrsummary %>% arrange(desc(avg_pick)) %>%
+  slice_tail(n=10)
+
+higehst_avg_pick$avg_pick <- round(higehst_avg_pick$avg_pick)
+
+ggplot(higehst_avg_pick, aes(x = reorder(college, +avg_pick), y = avg_pick)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  geom_text(aes(label = avg_pick),size=4, vjust = -0.2) +
+  theme_minimal() +
+  labs(
+    title = "Top 10 Colleges by Lowest Average Pick",
+    x = "College",
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  theme(plot.title = element_text(hjust = 0.5)) +
+  expand_limits(y = max(higehst_avg_pick$avg_pick) + 10) +
+  theme(axis.title.y=element_blank(),legend.position="none", axis.text.y=element_blank())+
+  theme(panel.background = element_rect(fill='white', color="white"))
+```
+Washington not only averaged a first round pick for each receiver were consitently a top 10 pick when it came to receivers, however they also meet the minimum threshold for total receivers drafted so this does skew them a bit. Coincidentally all Washington receivers that were drafted in this analysis are also picked at 9. 
+
+```{r}
+first_rounds <- wrsummary %>% arrange(desc(first_rounds)) %>%
+  slice_head(n=10)
+
+
+
+# Plot for highest average score for each reaciver
+ggplot(first_rounds, aes(x = reorder(college, -first_rounds), y = first_rounds)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  geom_text(aes(label = first_rounds),size=4, vjust = -0.2) +
+  theme_minimal() +
+  labs(
+    title = "Top 10 Colleges with WR Drafted in Round 1",
+    x = "College",
+    y = "Total First Rounders"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  theme(plot.title = element_text(hjust = 0.5)) +
+  expand_limits(y = max(first_rounds$first_rounds) + 10) +
+  theme(axis.title.y=element_blank(),legend.position="none", axis.text.y=element_blank())+
+  theme(panel.background = element_rect(fill='white', color="white"))
+```
+Alabama is tied with Ohio St. but of the 9 Alabama receivers drafted only 1 was drafted outside the first round. Half of all Ohio St. receivers were drafted in the first round similiar to Miami (FL). 
+
+Looking at all these, one college kept appearing. They are also one of two colleges to have a wide receiver drafted in the past 25 years and enter into the pro football hall of fame. The colleg is the Miami (FL), with receivers such as Andre Johnson and Reggie Wayne these players are some all time greats. In the next 25 years I can see LSU and and Ohio St., the presumed Wide Receiver U's taking that claim with their talented receivers but for now the U is Wide Receiver U. 
+
